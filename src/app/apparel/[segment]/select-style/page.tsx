@@ -1,10 +1,10 @@
 "use client";
 
-import FlowHeader from "@/components/FlowHeader";
-import ProgressStepper from "@/components/ProgressStepper";
-import StyleCard from "@/components/StyleCard";
-import Footer from "@/components/Footer";
-import LoadingActionButton from "@/components/LoadingActionButton";
+import FlowHeader from "@/frontend/components/FlowHeader";
+import ProgressStepper from "@/frontend/components/ProgressStepper";
+import StyleCard from "@/frontend/components/StyleCard";
+import Footer from "@/frontend/components/Footer";
+import LoadingActionButton from "@/frontend/components/LoadingActionButton";
 import { Sparkles, X, Wand2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -131,7 +131,7 @@ export default function StyleSelectionPage() {
       <FlowHeader title="Select Wear Type" />
 
       <main className="w-full flex-1 max-w-full lg:max-w-7xl mx-auto pt-[120px] px-5">
-        <ProgressStepper currentStep={2} />
+        <ProgressStepper currentStep={3} />
 
         {/* Heading */}
         <section className="mt-8 mb-10">

@@ -4,12 +4,10 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
       {
-        protocol: "https",
-        hostname: "image.pollinations.ai",
-      },
-      {
-        protocol: "http",
-        hostname: "localhost",
+        protocol: 'https',
+        hostname: 'playgrounds-storage-public.runcomfy.net',
+        port: '',
+        pathname: '/**',
       },
     ],
   },

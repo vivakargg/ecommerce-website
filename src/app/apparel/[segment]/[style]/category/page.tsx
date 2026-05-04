@@ -1,16 +1,17 @@
 "use client";
 
-import FlowHeader from "@/components/FlowHeader";
-import ProgressStepper from "@/components/ProgressStepper";
-import ProductTag from "@/components/ProductTag";
-import Footer from "@/components/Footer";
-import LoadingActionButton from "@/components/LoadingActionButton";
-import InfiniteCarousel from "@/components/InfiniteCarousel";
+import FlowHeader from "@/frontend/components/FlowHeader";
+import ProgressStepper from "@/frontend/components/ProgressStepper";
+import ProductTag from "@/frontend/components/ProductTag";
+import Footer from "@/frontend/components/Footer";
+import LoadingActionButton from "@/frontend/components/LoadingActionButton";
+import InfiniteCarousel from "@/frontend/components/InfiniteCarousel";
 import { useParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
-import { useRecentBranch } from "@/hooks/useRecentBranch";
+import { useRecentBranch } from "@/frontend/hooks/useRecentBranch";
+import { useGeneration } from "@/frontend/context/GenerationContext";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { TAXONOMY } from "@/registry/taxonomy";
 
@@ -20,7 +21,8 @@ export default function CategorySelectionPage() {
   const segment = (params.segment as string) || "ladies";
   const styleParam = (params.style as string) || "ethnic-wear";
 
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const { selectionState, updateSelection } = useGeneration();
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(selectionState.productCategory);
   const [isContinuing, setIsContinuing] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
@@ -52,6 +54,12 @@ export default function CategorySelectionPage() {
 
   const handleContinue = async () => {
     setIsContinuing(true);
+    // Save to context
+    updateSelection({ 
+      productCategory: selectedCategory,
+      // Reset model if category changed to ensure compatibility
+      ...(selectedCategory !== selectionState.productCategory ? { modelId: null } : {})
+    });
     await new Promise(resolve => setTimeout(resolve, 800));
     router.push(`/apparel/${segment}/${styleParam}/upload`);
   };
@@ -65,7 +73,7 @@ export default function CategorySelectionPage() {
 
       <main className="w-full flex-1 max-w-full md:max-w-7xl mx-auto pt-[120px] px-5 flex flex-col">
         <div className="mt-4 mb-2">
-          <ProgressStepper currentStep={3} />
+          <ProgressStepper currentStep={4} />
         </div>
 
         {/* SaaS Step 3: Gallery Carousel - Robust Infinite Implementation */}
@@ -92,7 +100,7 @@ export default function CategorySelectionPage() {
             {hasMore && (
               <button 
                 onClick={() => setShowAll(!showAll)}
-                className="flex items-center gap-1 text-[#7C4DFF] text-sm font-medium hover:opacity-80 transition-opacity"
+                className="flex items-center gap-1 text-[#7C4DFF] text-sm font-medium hover:opacity-80 transition-opacity cursor-pointer"
               >
                 {showAll ? (
                   <><ChevronUp className="w-4 h-4" /> Less</>

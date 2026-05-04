@@ -1,16 +1,27 @@
 "use client";
 
-import ProgressStepper from "@/components/ProgressStepper";
-import Footer from "@/components/Footer";
-import { Check, Sparkles, Wand2 } from "lucide-react";
+import Footer from "@/frontend/components/Footer";
+import { Check, Sparkles, Wand2, AlertCircle, RefreshCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
-import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
-import LoadingActionButton from "@/components/LoadingActionButton";
-import FlowHeader from "@/components/FlowHeader";
+import { useState, useEffect } from "react";
+import LoadingActionButton from "@/frontend/components/LoadingActionButton";
+import FlowHeader from "@/frontend/components/FlowHeader";
 import { TAXONOMY } from "@/registry/taxonomy";
+import { useProject } from "@/frontend/context/ProjectContext";
+import { useGenerationPolling } from "@/hooks/useGenerationPolling";
+
+/**
+ * Hydration-safe Wrapper
+ * Ensures that client-side context state (like currentProject) 
+ * doesn't cause mismatches between SSR and CSR.
+ */
+function useMounted() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  return mounted;
+}
 
 export default function SelectOutputViewsPage() {
   const params = useParams();
@@ -18,72 +29,123 @@ export default function SelectOutputViewsPage() {
   const segment = (params.segment as string) || "ladies";
   const styleParam = (params.style as string) || "ethnic-wear";
 
+  const { currentProject, updateProject } = useProject();
+  const mounted = useMounted();
+  const { status, outputImages, outputImage, error, generate, reset } = useGenerationPolling();
+
+  const isGenerating = status === "submitting" || status === "polling";
+  const isFailed = status === "failed";
+  const isCompleted = status === "completed";
+
   const getRecommendedViews = () => {
     const s = segment.charAt(0).toUpperCase() + segment.slice(1).toLowerCase();
-    const styleKey = styleParam.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    
+    const styleKey = styleParam.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
     const styles = TAXONOMY.apparel.styles[s] || [];
-    const matchedStyle = styles.find((st: any) => st.title === styleKey);
-    
-    const viewTitles = matchedStyle?.recommendedViews || ["Front View", "Left View", "Right View", "Back View", "Drape Detail", "Border Close-up"];
-    
-    // SaaS Rule: Map specific titles to their provided assets
-    const viewAssets: Record<string, string> = {
-      "Front View": "/assets/front_view.jpg",
-      "Left View": "/assets/left_view.png",
-      "Right View": "/assets/right_view.png",
-      "Back View": "/assets/back_view.png",
-      "Drape Detail": "/assets/detail_shot.png",
-      "Border Close-up": "/assets/border_closeup.png"
-    };
+    const matchedStyle = styles.find((st: { title: string; recommendedViews?: string[] }) => st.title === styleKey);
+    const viewTitles = matchedStyle?.recommendedViews || ["Front View", "Left View", "Right View", "Close-up", "Detail Shot"];
+    return viewTitles.slice(0, 5).map((title: string) => {
+      const id = title.toLowerCase().replace(/\s+/g, "-");
+      let viewStyles = "object-cover transition-all duration-700";
+      
+      // Dynamic CSS generation for categorized views based on prime image
+      if (id === "front-view") viewStyles += " object-[center_center] scale-100";
+      else if (id === "left-view") viewStyles += " object-[25%_center] scale-110";
+      else if (id === "right-view") viewStyles += " object-[75%_center] scale-110";
+      else if (id === "close-up") viewStyles += " object-[center_20%] scale-[1.5]";
+      else if (id === "detail-shot") viewStyles += " object-[center_60%] scale-[2]";
 
-    return viewTitles.map((title: string) => ({
-      id: title.toLowerCase().replace(/\s+/g, '-'),
-      title,
-      image: viewAssets[title] || matchedStyle?.samples?.[0] || "/assets/ladies/ethnic-wear/woman-sari-with-brown-background.jpg"
-    }));
+      return {
+        id,
+        title,
+        previewImage: currentProject?.primeImage || "/assets/placeholder.jpg",
+        viewStyles
+      };
+    });
   };
 
   const views = getRecommendedViews();
-
-  // Rule 6.8: Pre-select sensible bundle (First 3 recommended views)
   const [selectedViews, setSelectedViews] = useState<string[]>(
-    views.slice(0, 3).map((v: any) => v.id)
+    (currentProject?.selectedOutputViews && currentProject.selectedOutputViews.length > 0)
+      ? currentProject.selectedOutputViews
+      : views.slice(0, 5).map((v: { id: string }) => v.id)
   );
-  const [isCustomMode, setIsCustomMode] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isCustomMode, setIsCustomMode] = useState(Boolean(currentProject?.isCustomViewEnabled));
   const [showMaxWarning, setShowMaxWarning] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState(currentProject?.customViewPrompt || "");
+  const MAX_VIEWS = 5;
 
-  const MAX_VIEWS = 4;
+  const normalizeModelImageUrl = (value: string | undefined, fallback: string) => {
+    if (value && (value.startsWith("http://") || value.startsWith("https://"))) {
+      return value;
+    }
+    return fallback;
+  };
 
-  const handleGenerate = async () => {
-    setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    router.push(`/apparel/${segment}/${styleParam}/video-style`);
+  useEffect(() => {
+    if (!currentProject?.primeImage) {
+      router.replace(`/apparel/${segment}/${styleParam}/approve-prime`);
+    }
+  }, [currentProject?.primeImage, router, segment, styleParam]);
+
+  // When generation completes, save output views to context and navigate
+  useEffect(() => {
+    if (isCompleted) {
+      const allImages = outputImages.length > 0 ? outputImages : outputImage ? [outputImage] : [];
+      const selectedTitles = views
+        .filter((view: { id: string; title: string }) => selectedViews.includes(view.id))
+        .map((view: { title: string }) => view.title);
+
+      if (isCustomMode) {
+        selectedTitles.push("Custom");
+      }
+
+      const generatedViewLabels = allImages.map((_, index) => selectedTitles[index] || `View ${index + 1}`);
+
+      updateProject({
+        outputViews: allImages,
+        selectedOutputViews: selectedViews,
+        isCustomViewEnabled: isCustomMode,
+        customViewPrompt: customPrompt,
+        generatedViewLabels,
+      });
+      router.push(`/apparel/${segment}/${styleParam}/video-style`);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompleted]);
+
+  const handleGenerate = () => {
+    if (!currentProject?.garmentImageUrl && !currentProject?.productImageUrl) return;
+    reset();
+    const totalCount = selectedViews.length + (isCustomMode ? 1 : 0);
+    const garmentUrl = currentProject?.garmentImageUrl || currentProject?.productImageUrl || "";
+    generate({
+      garmentImageUrl: garmentUrl,
+      modelImageUrl: normalizeModelImageUrl(currentProject?.modelImageUrl, garmentUrl),
+      mode: "AI Studio" as const,
+      hub: "Apparel" as const,
+      segment: segment.charAt(0).toUpperCase() + segment.slice(1),
+      wearType: styleParam.split("-").map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(" "),
+      style: currentProject?.styleId || "Catalog",
+      background: currentProject?.backgroundId || "Studio White",
+      outputFormat: totalCount === 1 ? "single" : totalCount <= 3 ? "triple" : "multi-view",
+      outputCount: Math.min(totalCount, 6),
+      outputViews: isCustomMode ? [...selectedViews, "custom"] : selectedViews,
+      prompt: customPrompt,
+    });
   };
 
   const toggleView = (id: string) => {
     setSelectedViews(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(v => v !== id);
-      }
-      const totalSelected = prev.length + (isCustomMode ? 1 : 0);
-      if (totalSelected >= MAX_VIEWS) {
-        setShowMaxWarning(true);
-        setTimeout(() => setShowMaxWarning(false), 2000);
-        return prev;
-      }
+      if (prev.includes(id)) return prev.filter(v => v !== id);
+      const total = prev.length + (isCustomMode ? 1 : 0);
+      if (total >= MAX_VIEWS) { setShowMaxWarning(true); setTimeout(() => setShowMaxWarning(false), 2000); return prev; }
       return [...prev, id];
     });
   };
 
   const toggleCustom = () => {
-    if (!isCustomMode) {
-      if (selectedViews.length >= MAX_VIEWS) {
-        setShowMaxWarning(true);
-        setTimeout(() => setShowMaxWarning(false), 2000);
-        return;
-      }
+    if (!isCustomMode && selectedViews.length + 1 > MAX_VIEWS) {
+      setShowMaxWarning(true); setTimeout(() => setShowMaxWarning(false), 2000); return;
     }
     setIsCustomMode(!isCustomMode);
   };
@@ -93,208 +155,147 @@ export default function SelectOutputViewsPage() {
   return (
     <div className="relative flex flex-col min-h-screen bg-black text-white selection:bg-figma-gradient/30">
       <FlowHeader title="Output Views" />
-
       <main className="w-full flex-1 max-w-full lg:max-w-7xl mx-auto pt-[120px] px-5">
-        {/* Step 7: Alternate Views selection */}
-        <ProgressStepper currentStep={9} />
-        
-        {/* Max Selection Toast */}
+        <div className="flex justify-center gap-2 mb-12 mt-2">
+          {[1, 2, 3, 4, 5, 6].map((dot) => (
+            <div key={dot} className={`h-1 w-full max-w-[44px] rounded-full ${dot <= 5 ? "bg-gradient-to-r from-[#7C3AED] to-[#EC4899]" : "bg-white/10"}`} />
+          ))}
+        </div>
+
+        {/* Generating overlay */}
         <AnimatePresence>
-          {showMaxWarning && (
-            <motion.div
-              initial={{ opacity: 0, y: 50, x: "-50%" }}
-              animate={{ opacity: 1, y: 0, x: "-50%" }}
-              exit={{ opacity: 0, y: 20, x: "-50%" }}
-              className="fixed bottom-24 left-1/2 z-[100] px-6 py-3 bg-[#E5484D] rounded-full shadow-2xl flex items-center gap-3 border border-white/20 backdrop-blur-md"
+          {isGenerating && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center gap-6"
             >
-              <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center">
-                <Sparkles className="w-3 h-3 text-white" />
+              <div className="relative w-24 h-24">
+                <div className="absolute inset-0 border-4 border-white/10 rounded-full" />
+                <motion.div className="absolute inset-0 border-4 border-t-[#7C4DFF] rounded-full"
+                  animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: "linear" }} />
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Sparkles className="w-10 h-10 text-[#7C4DFF] animate-pulse" />
+                </div>
               </div>
-              <span className="text-white font-medium text-sm">
-                Maximum 4 views can be selected
-              </span>
+              <div className="text-center px-5">
+                <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Generating {totalSelectedCount} High-Fashion Views</h2>
+                <p className="text-[#99A1AF] text-sm animate-pulse font-medium">Running multi-perspective render pipeline...</p>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Heading Section */}
-        <section className="mt-8 mb-10">
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
+        {/* Error banner */}
+        {isFailed && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+            className="mb-8 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 max-w-[353px] lg:max-w-[800px] mx-auto"
           >
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-              <div>
-                <h1 className="font-roboto font-semibold text-3xl lg:text-[36px] leading-tight lg:leading-[45px] tracking-[-0.9px] text-[#E2E2E8] mb-4">
-                  Select Output Views
-                </h1>
-                <p className="font-roboto font-normal text-base leading-[19px] text-[#C2C6D6]">
-                  Choose the outputs you want to generate for your high-fashion catalog.
-                </p>
-              </div>
-              
-              <div className="flex items-center gap-3 px-4 py-2 bg-white/5 border border-white/10 rounded-full h-fit">
-                <div className="flex items-center gap-1.5">
-                  <span className={`text-[13px] font-bold ${totalSelectedCount === MAX_VIEWS ? "text-figma-gradient bg-clip-text text-transparent" : "text-white"}`}>
-                    {totalSelectedCount}
-                  </span>
-                  <span className="text-[13px] text-[#C2C6D6]">/</span>
-                  <span className="text-[13px] text-[#C2C6D6]">{MAX_VIEWS}</span>
-                </div>
-                <div className="w-[1px] h-3 bg-white/10" />
-                <span className="text-[11px] font-bold uppercase tracking-wider text-[#99A1AF]">
-                  Premium Limit
-                </span>
-              </div>
-            </div>
-            
-            <div className="mt-6 p-4 bg-[#7C4DFF]/5 border border-[#7C4DFF]/20 rounded-xl flex items-center gap-3">
-               <div className="w-8 h-8 rounded-full bg-[#7C4DFF]/10 flex items-center justify-center">
-                  <Sparkles className="w-4 h-4 text-[#7C4DFF]" />
-               </div>
-               <p className="text-sm text-[#C5B6DE]">
-                 <span className="font-bold text-white">Pro Tip:</span> Selecting up to 4 views ensures maximum consistency and rendering quality across your collection.
-               </p>
-            </div>
+            <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+            <p className="text-red-400 text-sm font-medium">{error || "Generation failed."}</p>
+            <button onClick={handleGenerate} className="ml-auto text-red-400 text-sm font-bold underline flex items-center gap-1">
+              <RefreshCcw className="w-3 h-3" /> Retry
+            </button>
+          </motion.div>
+        )}
+
+        <section className="mb-10 text-center flex flex-col items-center">
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5 }}>
+            <h1 className="font-roboto font-bold text-[32px] md:text-[42px] leading-tight tracking-[-1px] text-white mb-3 px-4">
+              Select Output Views
+            </h1>
+            <p className="font-roboto font-normal text-[15px] leading-[22px] text-[#9CA3AF] max-w-[320px] lg:max-w-none px-4">
+              Choose the outputs you want to generate for your high-fashion catalog.
+            </p>
           </motion.div>
         </section>
 
-        {/* Views Grid (2-column mobile, responsive desktop) */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-          {views.map((view: any, idx: number) => {
+        <div className="grid grid-cols-2 gap-4 lg:gap-8 mb-10 max-w-[353px] lg:max-w-[800px] mx-auto">
+          {views.map((view: { id: string; title: string; previewImage: string; viewStyles: string }, idx: number) => {
             const isSelected = selectedViews.includes(view.id);
             return (
-              <motion.div
-                key={view.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
+              <motion.div key={view.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.05 }}
                 onClick={() => toggleView(view.id)}
                 className="flex flex-col items-center gap-3 group cursor-pointer"
               >
-                <div className={`relative w-full aspect-[166/207] rounded-[10px] overflow-hidden border-2 transition-all ${
-                  isSelected ? "border-transparent" : "border-white/5 hover:border-white/20"
-                }`}>
-                  <Image 
-                    src={view.image} 
-                    alt={view.title} 
-                    fill 
-                    loading="lazy" 
-                    className="object-cover transition-transform group-hover:scale-105"
-                  />
-                  
-                  {/* Selection Indicator Overlay */}
-                  {isSelected && (
-                    <div className="absolute inset-0 border-[3px] border-figma-gradient rounded-[8px]" />
-                  )}
-                  
-                  {/* Checkmark Badge */}
-                  {isSelected && (
-                    <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-figma-gradient flex items-center justify-center shadow-lg">
-                      <Check className="w-3.5 h-3.5 text-white" />
+                <div className={`relative w-full aspect-[166/207] rounded-[16px] overflow-hidden border transition-all duration-300 ${isSelected ? "border-[#7C4DFF] border-[2px] shadow-[0_0_20px_rgba(124,77,255,0.3)]" : "border-white/10 border-[1px] hover:border-white/30"}`}>
+                  {mounted && view.previewImage ? (
+                    <Image 
+                      src={view.previewImage} 
+                      alt={view.title} 
+                      fill 
+                      className={`${view.viewStyles} ${isSelected ? "" : "opacity-80 group-hover:opacity-100"}`} 
+                      loading="lazy" 
+                      unoptimized 
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-white/5 flex items-center justify-center">
+                      <Sparkles className="w-8 h-8 text-white/10" />
                     </div>
                   )}
+                  
+                  <div className={`absolute top-3 right-3 w-5 h-5 rounded-full flex items-center justify-center transition-all duration-300 ${isSelected ? "bg-[#7C4DFF] shadow-lg" : "bg-black/40 border border-white/20 backdrop-blur-md"}`}>
+                    {isSelected && <Check className="w-3 h-3 text-white stroke-[4px]" />}
+                  </div>
                 </div>
-                <span className={`font-roboto font-medium text-[13px] leading-[15px] transition-colors ${
-                  isSelected ? "text-white" : "text-[#E2E2E8]"
-                }`}>
+                <span className={`font-roboto font-medium text-[13px] leading-[15px] transition-colors ${isSelected ? "text-white" : "text-[#9CA3AF] group-hover:text-white"}`}>
                   {view.title}
                 </span>
               </motion.div>
             );
           })}
 
-          {/* Custom Option Card */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.3 }}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: views.length * 0.05 }}
             onClick={toggleCustom}
             className="flex flex-col items-center gap-3 group cursor-pointer"
           >
-            <div className={`relative w-full aspect-[166/207] bg-[#1A1E29] rounded-[10px] overflow-hidden border-2 transition-all flex flex-col items-center justify-center gap-4 ${
-              isCustomMode ? "border-transparent" : "border-white/5 hover:border-white/20"
-            }`}>
-              <div className={`w-[45px] h-[45px] rounded-full flex items-center justify-center shadow-[0_0_20px_rgba(35,161,255,0.3)] transition-all ${
-                isCustomMode ? "bg-figma-gradient" : "bg-black/40"
-              }`}>
-                <Sparkles className={`w-5 h-5 transition-colors ${
-                  isCustomMode ? "text-white" : "text-[#00C2FF]"
-                }`} />
-              </div>
-              <span className="font-roboto font-medium text-[15px] text-white">Custom</span>
-              
-              {/* Selection Indicator Overlay */}
-              {isCustomMode && (
-                <div className="absolute inset-0 border-[3px] border-figma-gradient rounded-[8px]" />
-              )}
-              
-              {/* Checkmark Badge */}
-              {isCustomMode && (
-                <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-figma-gradient flex items-center justify-center shadow-lg">
-                  <Check className="w-3.5 h-3.5 text-white" />
+            <div className={`relative w-full aspect-[166/207] rounded-[16px] overflow-hidden border transition-all duration-300 bg-[#060B18] ${isCustomMode ? "border-[#7C4DFF] border-[2px] shadow-[0_0_20px_rgba(124,77,255,0.3)]" : "border-white/10 border-[1px] hover:border-white/30"}`}>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all duration-500 ${isCustomMode ? "bg-[#7C4DFF]/20 scale-110 shadow-[0_0_30px_rgba(124,77,255,0.1)]" : "bg-white/5 border border-white/5 group-hover:scale-110"}`}>
+                  <Sparkles className={`w-8 h-8 transition-colors duration-500 ${isCustomMode ? "text-[#7C4DFF]" : "text-white/20"}`} />
                 </div>
-              )}
+              </div>
+              <div className={`absolute top-3 right-3 w-5 h-5 rounded-full flex items-center justify-center transition-all duration-300 ${isCustomMode ? "bg-[#7C4DFF] shadow-lg" : "bg-black/40 border border-white/20 backdrop-blur-md"}`}>
+                {isCustomMode && <Check className="w-3 h-3 text-white stroke-[4px]" />}
+              </div>
             </div>
-            <span className={`font-roboto font-medium text-[13px] transition-colors ${
-              isCustomMode ? "text-white" : "text-[#E2E2E8]"
-            }`}>
-              Request Tool
+            <span className={`font-roboto font-medium text-[13px] leading-[15px] transition-colors ${isCustomMode ? "text-white" : "text-[#9CA3AF] group-hover:text-white"}`}>
+              Custom
             </span>
           </motion.div>
         </div>
 
-        {/* AI Custom Angle Prompt (Appears when Custom is clicked) */}
-        {isCustomMode && (
-          <motion.section 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-12"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <h2 className="font-roboto font-semibold text-xl leading-[23px] text-white">
-                  AI Custom Angle
-                </h2>
-                <span className="font-roboto font-semibold text-xs leading-[14px] text-[#C5B6DE]">
-                  (Expert Mode)
-                </span>
-              </div>
-            </div>
-
-            <div className="relative group mb-4">
-              <textarea
-                className="w-full h-[120px] bg-black/30 border border-white/20 rounded-[10px] p-4 font-roboto text-sm focus:border-[#7C4DFF] focus:ring-1 focus:ring-[#7C4DFF] outline-none transition-all placeholder:text-[#C2C6D6]/40 resize-none shadow-inner"
-                placeholder="E.g. Focus on the golden pallu details, add warm sunlight flare from left..."
-              />
-            </div>
-
-            <div className="flex items-center gap-2 text-[#99A1AF] bg-white/5 border border-white/5 p-3 rounded-lg">
-              <Wand2 className="w-4 h-4 text-[#7C4DFF]" />
-              <p className="text-[12px] font-medium italic">
-                Professional output depends on the precision of your prompt. Be descriptive for cinematic results.
-              </p>
-            </div>
-          </motion.section>
-        )}
-
-        {/* Inline Generate Button */}
-        <div className="w-full mt-12 mb-10 lg:mb-16">
-          <div className="w-full max-w-full sm:max-w-[353px] mx-auto lg:max-w-[400px]">
-            <LoadingActionButton
-              isLoading={isLoading}
-              onClick={handleGenerate}
-              className="w-full h-[61px]"
-              disabled={totalSelectedCount === 0}
-            >
-              Generate Outputs
-            </LoadingActionButton>
+        <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="mt-12 mb-12 max-w-[353px] lg:max-w-[800px] mx-auto w-full px-1">
+          <div className="flex items-center gap-2 mb-4">
+            <h2 className="font-roboto font-bold text-[18px] text-white tracking-tight">AI Custom Angle</h2>
+            <span className="font-roboto font-normal text-[13px] text-[#9CA3AF] opacity-60">(Optional)</span>
           </div>
-        </div>
-      </main>
+          <textarea 
+            value={customPrompt} 
+            onChange={e => setCustomPrompt(e.target.value)}
+            className="w-full h-[120px] bg-[#0A0A0A] border border-white/10 rounded-[20px] p-5 font-roboto text-[15px] leading-relaxed text-white focus:border-[#7C4DFF]/50 focus:ring-1 focus:ring-[#7C4DFF]/50 outline-none transition-all placeholder:text-white/20 resize-none shadow-inner"
+            placeholder="E.g. Focus on the golden pallu details, add warm sunlight flare from left..."
+          />
+          <div className="flex items-center gap-2 text-[#9CA3AF] mt-4 px-1">
+            <Sparkles className="w-3.5 h-3.5 text-[#7C4DFF]" />
+            <p className="text-[11px] font-medium tracking-wide italic opacity-80 uppercase">Professional output depends on the precision of your prompt.</p>
+          </div>
+        </motion.section>
 
-      {/* Desktop Footer */}
+        <div className="w-full mt-10 mb-20 flex justify-center px-5">
+          <LoadingActionButton 
+            isLoading={isGenerating} 
+            onClick={handleGenerate}
+            className="w-full max-w-[353px] lg:max-w-[400px] h-[61px] rounded-full bg-figma-gradient font-roboto font-bold text-[18px] text-white shadow-[0_10px_40px_rgba(124,77,255,0.4)] hover:shadow-[0_10px_50px_rgba(124,77,255,0.6)] transition-all active:scale-[0.98]" 
+            disabled={totalSelectedCount === 0 || isGenerating}
+          >
+            Generate Outputs
+          </LoadingActionButton>
+        </div>
+
+      </main>
       <Footer />
     </div>
   );

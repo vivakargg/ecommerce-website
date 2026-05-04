@@ -1,20 +1,28 @@
 "use client";
 
-import FlowHeader from "@/components/FlowHeader";
-import ProgressStepper from "@/components/ProgressStepper";
-import ProductHero from "@/components/ProductHero";
-import ProductTag from "@/components/ProductTag";
-import Footer from "@/components/Footer";
-import { useParams } from "next/navigation";
-import { useState } from "react";
+import FlowHeader from "@/frontend/components/FlowHeader";
+import ProgressStepper from "@/frontend/components/ProgressStepper";
+import ProductHero from "@/frontend/components/ProductHero";
+import ProductTag from "@/frontend/components/ProductTag";
+import Footer from "@/frontend/components/Footer";
+import { useParams, useRouter } from "next/navigation";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 
 export default function ProductSelectionPage() {
   const params = useParams();
+  const router = useRouter();
   const segment = (params.segment as string) || "Ladies";
   const style = (params.style as string) || "Ethnic Wear";
   
+  // Guard: If style is "select-style", redirect to the correct static route
+  useEffect(() => {
+    if (style === "select-style") {
+      router.replace(`/apparel/${segment}/select-style`);
+    }
+  }, [style, segment, router]);
+
   const isGents = segment.toLowerCase() === "gents" || segment.toLowerCase() === "men";
 
   // Define dynamic image arrays for styles
@@ -84,13 +92,15 @@ export default function ProductSelectionPage() {
   // Start with no tag selected
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
+  if (style === "select-style") return null;
+
   return (
     <div className="relative flex flex-col min-h-screen bg-black text-white selection:bg-figma-gradient/30 mt-auto">
       <FlowHeader title="Select Product" />
 
       <main className="w-full flex-1 max-w-full lg:max-w-7xl mx-auto pt-[120px] px-5">
         {/* Step 3 in progress */}
-        <ProgressStepper currentStep={3} />
+        <ProgressStepper currentStep={4} />
 
         {/* Featured Product Hero (Carousel) */}
         <section className="mt-[28px]">

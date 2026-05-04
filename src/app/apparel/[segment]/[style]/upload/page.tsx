@@ -1,42 +1,43 @@
 // src/app/apparel/[segment]/[style]/upload/page.tsx
 "use client";
 
-import FlowHeader from "@/components/FlowHeader";
-import ProgressStepper from "@/components/ProgressStepper";
-import Footer from "@/components/Footer";
+import FlowHeader from "@/frontend/components/FlowHeader";
+import ProgressStepper from "@/frontend/components/ProgressStepper";
+import Footer from "@/frontend/components/Footer";
 import { useParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useState } from "react";
-import { motion } from "framer-motion";
-import LoadingActionButton from "@/components/LoadingActionButton";
-import { Skeleton } from "@/components/ui/Skeleton";
-import ProductTag from "@/components/ProductTag";
+import LoadingActionButton from "@/frontend/components/LoadingActionButton";
+import { Skeleton } from "@/frontend/components/ui/Skeleton";
+import ProductTag from "@/frontend/components/ProductTag";
 
 // Services & Context
-import { useAuth } from "@/context/AuthContext";
-import { useGeneration } from "@/context/GenerationContext";
-import { storageService } from "@/services/storageService";
+import { useAuth } from "@/frontend/context/AuthContext";
+import { useGeneration } from "@/frontend/context/GenerationContext";
+import { useProject } from "@/frontend/context/ProjectContext";
+import { storageService } from "@/backend/services/storageService";
 
 // Dynamic components
-const UploadZone = dynamic(() => import("@/components/UploadZone"), { 
+const UploadZone = dynamic(() => import("@/frontend/components/UploadZone"), { 
   ssr: false, 
   loading: () => <Skeleton className="w-full h-[240px] rounded-2xl" /> 
 });
-const ModelScroll = dynamic(() => import("@/components/ModelScroll"), { 
+const ModelScroll = dynamic(() => import("@/frontend/components/ModelScroll"), { 
   ssr: false, 
   loading: () => <Skeleton className="w-full h-[170px] rounded-xl" /> 
 });
-const BackgroundGrid = dynamic(() => import("@/components/BackgroundGrid"), { 
+const BackgroundGrid = dynamic(() => import("@/frontend/components/BackgroundGrid"), { 
   ssr: false, 
   loading: () => <div className="grid grid-cols-2 gap-4"><Skeleton className="h-[100px]" /><Skeleton className="h-[100px]" /></div> 
 });
-const AIDirectorNotes = dynamic(() => import("@/components/AIDirectorNotes"), { ssr: false });
-const SelectionPreviewModal = dynamic(() => import("@/components/SelectionPreviewModal"), { ssr: false });
+const AIDirectorNotes = dynamic(() => import("@/frontend/components/AIDirectorNotes"), { ssr: false });
+const SelectionPreviewModal = dynamic(() => import("@/frontend/components/SelectionPreviewModal"), { ssr: false });
 
 export default function UnifiedUploadSetupPage() {
   const params = useParams();
   const router = useRouter();
   const { user } = useAuth();
+  const { updateProject } = useProject();
   const { 
     selectionState, 
     updateSelection, 
@@ -52,16 +53,19 @@ export default function UnifiedUploadSetupPage() {
   const [error, setError] = useState<string | null>(null);
   
   // Selection states (for shorthand/readability)
-  const { modelId, backgroundId, styleId, prompt } = selectionState;
+  const { modelId, backgroundId, styleId, prompt, productCategory } = selectionState;
   
   // Preview States
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [selectedModelImage, setSelectedModelImage] = useState<string | null>(null);
 
   const outputStyles = ["Catalog", "Premium", "Social Media", "Lifestyle"];
 
   const handleModelSelect = (model: { id: string; image: string }) => {
-    updateSelection({ modelId: modelId === model.id ? null : model.id });
+    const isSameModel = modelId === model.id;
+    updateSelection({ modelId: isSameModel ? null : model.id });
+    setSelectedModelImage(isSameModel ? null : model.image);
   };
 
   const handleModelPreview = (model: { id: string; image: string }) => {
@@ -76,6 +80,47 @@ export default function UnifiedUploadSetupPage() {
   const handleBackgroundPreview = (bg: { title: string; image: string }) => {
     setPreviewImage(bg.image);
     setIsPreviewOpen(true);
+  };
+
+  // Category-specific model mapping
+  const getFilteredModels = () => {
+    if (productCategory === "Saree") {
+      return Array.from({ length: 9 }, (_, i) => ({
+        id: `saree-${i + 1}`,
+        image: `/assets/ladies/ethnic-wear/saree-modal/saaree_Model${i + 1}.jpg`
+      }));
+    }
+    if (productCategory === "Kurti") {
+      return Array.from({ length: 7 }, (_, i) => ({
+        id: `kurti-${i + 1}`,
+        image: `/assets/ladies/ethnic-wear/kurti-modal/kurti_modal${i + 1}.jpg`
+      }));
+    }
+    return []; // Fallback to default models in ModelScroll component
+  };
+
+  const filteredModels = getFilteredModels();
+
+  const resolveModelImage = () => {
+    if (selectedModelImage) {
+      return selectedModelImage;
+    }
+
+    if (!modelId) {
+      return null;
+    }
+
+    const fromFiltered = filteredModels.find((model) => model.id === modelId)?.image;
+    if (fromFiltered) {
+      return fromFiltered;
+    }
+
+    const numericId = Number.parseInt(modelId, 10);
+    if (!Number.isNaN(numericId)) {
+      return `/Model_${numericId}.jpg`;
+    }
+
+    return null;
   };
 
   const handleGenerate = async () => {
@@ -93,36 +138,37 @@ export default function UnifiedUploadSetupPage() {
 
     try {
       // 1. Upload Image to Storage
-      const imageUrl = await storageService.uploadGarment(user.uid, rawFile);
+      const imageUrl = await storageService.uploadGarment(user.id, rawFile);
       setUploadedImageUrl(imageUrl);
 
-      // 2. Call the server-side API to create the job + trigger RunComfy
-      //    (generationService runs only on the server via this route)
-      const apiResponse = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          garmentImageUrl: imageUrl,
-          modelId,
-          background: backgroundId,
-          style: styleId,
-          prompt,
-        }),
+      // 2. Persist project setup for approve-prime generation step.
+      updateProject({
+        garmentImageUrl: imageUrl,
+        productImageUrl: imageUrl,
+        modelId: modelId || undefined,
+        modelImageUrl: resolveModelImage() || undefined,
+        backgroundId: backgroundId || undefined,
+        styleId: styleId || undefined,
+        prompt: prompt || "",
+        primeImage: undefined,
+        outputViews: [],
+        selectedOutputViews: [],
+        generatedViewLabels: [],
+        isCustomViewEnabled: false,
+        customViewPrompt: "",
+        videoStyle: undefined,
+        videoPrompt: "",
+        videoUrl: undefined,
+        approvedPrime: false,
       });
 
-      if (!apiResponse.ok) {
-        const errData = await apiResponse.json();
-        throw new Error(errData.error || "API call failed");
-      }
+      // 3. Continue to generated-result screen where polling/render happens.
+      router.push(`/apparel/${segment}/${style}/approve-prime`);
 
-      const { jobId } = await apiResponse.json();
-
-      // 3. Redirect to Result Page
-      router.push(`/result/${jobId}`);
-
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("❌ [Generate Flow] Error:", err);
-      setError(err.message || "Failed to start generation. Try again.");
+      const message = err instanceof Error ? err.message : "Failed to start generation. Try again.";
+      setError(message);
       setIsGenerating(false);
     }
   };
@@ -158,6 +204,7 @@ export default function UnifiedUploadSetupPage() {
                 selectedId={modelId} 
                 onSelect={handleModelSelect} 
                 onPreview={handleModelPreview}
+                modelsOverride={filteredModels}
               />
             </div>
           </section>
